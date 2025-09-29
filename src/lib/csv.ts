@@ -1,62 +1,89 @@
-import type { Job, ServiceType, Stage } from "./types";
+import type { Job } from "./types";
 
-const uid = () => Math.random().toString(36).slice(2, 10);
+const headers: (keyof Job)[] = [
+  "id","customer","site","address","serviceType","carrier","reference","numbers","numbersList","amountEx","portDate","status","priority","assignedTo",
+  "billingContactName","billingContactEmail","billingContactPhone","siteContactName","siteContactEmail","siteContactPhone",
+  "notes","createdAt","updatedAt",
+];
 
-export function toCSV(rows: Job[]) {
-  const headers = [
-    "id","customer","serviceType","reference","numbersList","status"
-  ];
-  const esc = (v: any) => {
-    if (Array.isArray(v)) v = v.join("|");
-    const s = v == null ? "" : String(v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
-  const lines = [headers.join(",")];
+function esc(v: unknown): string {
+  let s: string;
+  if (Array.isArray(v)) s = v.map((x) => String(x ?? "")).join("|");
+  else s = v === undefined || v === null ? "" : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+export function toCSV(rows: Job[]): string {
+  const lines: string[] = [headers.join(",")];
   for (const r of rows) {
-    const row: any = {
-      ...r,
-      numbersList: (r.numbersList || []).join("|"),
-    };
-    lines.push(headers.map(h => esc(row[h])).join(","));
+    const rowRec = r as Record<keyof Job, unknown>;
+    lines.push(headers.map((h) => esc(rowRec[h])).join(","));
   }
   return lines.join("\n");
 }
 
-export async function fromCSVFile(file: File): Promise<Job[]> {
-  const text = await file.text();
-  const [headerLine, ...lines] = text.split(/\r?\n/).filter(Boolean);
-  const headers = headerLine.split(",");
-  const idx = (h: string) => headers.indexOf(h);
-  const out: Job[] = [];
-  for (const line of lines) {
-    const c = parseCSVLine(line);
-    out.push({
-      id: c[idx("id")] || uid(),
-      customer: c[idx("customer")] || "",
-      serviceType: (c[idx("serviceType")] as ServiceType) || "Porting",
-      reference: c[idx("reference")] || undefined,
-      numbersList: c[idx("numbersList")] ? c[idx("numbersList")].split("|").filter(Boolean) : [],
-      status: (c[idx("status")] as Stage) || "In Tray",
-    });
-  }
-  return out;
-}
-
-export function parseCSVLine(line: string): string[] {
-  const out: string[] = [];
-  let cur = "", q = false;
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-    if (q) {
-      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
-      else if (ch === '"') { q = false; }
-      else cur += ch;
+    if (inQuotes) {
+      if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
+      else if (ch === '"') { inQuotes = false; }
+      else { current += ch; }
     } else {
-      if (ch === '"') q = true;
-      else if (ch === ',') { out.push(cur); cur = ""; }
-      else cur += ch;
+      if (ch === '"') inQuotes = true;
+      else if (ch === ',') { result.push(current); current = ""; }
+      else { current += ch; }
     }
   }
-  out.push(cur);
+  result.push(current);
+  return result;
+}
+
+export async function fromCSVFile(file: File): Promise<Job[]> {
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return [];
+  const headerLine = lines[0];
+  const cols = headerLine.split(",");
+  const idx = (h: keyof Job) => cols.indexOf(h as string);
+
+  const out: Job[] = [];
+  for (const line of lines.slice(1)) {
+    const cells = parseCSVLine(line);
+    const get = (h: keyof Job): string => cells[idx(h)] ?? "";
+    const num = (h: keyof Job): number | undefined => {
+      const v = get(h);
+      return v ? Number(v) : undefined;
+    };
+
+    out.push({
+      id: get("id") || crypto.randomUUID(),
+      customer: get("customer"),
+      site: get("site") || "",
+      address: get("address") || "",
+      serviceType: (get("serviceType") as Job["serviceType"]) || "Porting",
+      carrier: get("carrier") || "",
+      reference: get("reference") || "",
+      numbers: get("numbers") || "",
+      numbersList: get("numbersList") ? get("numbersList").split("|").filter(Boolean) : undefined,
+      amountEx: num("amountEx"),
+      portDate: get("portDate") || "",
+      status: (get("status") as Job["status"]) || "In Tray",
+      priority: (get("priority") as Job["priority"]) || "Normal",
+      assignedTo: get("assignedTo") || "",
+      billingContactName: get("billingContactName") || "",
+      billingContactEmail: get("billingContactEmail") || "",
+      billingContactPhone: get("billingContactPhone") || "",
+      siteContactName: get("siteContactName") || "",
+      siteContactEmail: get("siteContactEmail") || "",
+      siteContactPhone: get("siteContactPhone") || "",
+      notes: get("notes") || "",
+      createdAt: get("createdAt") || new Date().toISOString().slice(0, 10),
+      updatedAt: get("updatedAt") || new Date().toISOString().slice(0, 10),
+    });
+  }
   return out;
 }

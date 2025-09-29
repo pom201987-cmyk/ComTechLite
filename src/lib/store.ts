@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 import type { Attachment, Job, JobServiceLine, PriceItem, Stage, Todo } from "./types";
 import { useEffect, useState } from "react";
 

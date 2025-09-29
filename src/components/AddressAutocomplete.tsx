@@ -1,153 +1,108 @@
-/// <reference types="@types/google.maps" />
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
-import Script from "next/script";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+/** Expect the Google JS API to already be loaded via a <script> tag elsewhere. */
+declare global {
+  interface Window {
+    google?: typeof google;
+  }
+}
 
 type Props = {
   value: string;
   onChange: (val: string) => void;
+  onSelect?: (place: google.maps.places.PlaceResult) => void;
   placeholder?: string;
-  country?: string; // ISO-2 like "au"
+  className?: string;
 };
 
 export default function AddressAutocomplete({
   value,
   onChange,
+  onSelect,
   placeholder = "Street, Suburb, State",
-  country = "au",
+  className,
 }: Props) {
-  const [ready, setReady] = useState(false);
-  const [q, setQ] = useState(value || "");
+  const [preds, setPreds] = useState<google.maps.places.AutocompletePrediction[]>([]);
   const [open, setOpen] = useState(false);
-  const [suggestions, setSuggestions] = useState<
-    google.maps.places.AutocompletePrediction[]
-  >([]);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const svcRef = useRef<google.maps.places.AutocompleteService | null>(null);
-  const detailsRef = useRef<google.maps.places.PlacesService | null>(null);
-  const debounceRef = useRef<number | null>(null);
+  const canUsePlaces = typeof window !== "undefined" && !!window.google?.maps?.places;
 
-  // Keep input in sync when parent value changes
+  // Fetch predictions when value changes
   useEffect(() => {
-    setQ(value || "");
-  }, [value]);
-
-  // Init Places services once the script has loaded
-  useEffect(() => {
-    if (!ready) return;
-    const g = (window as any).google as typeof google | undefined;
-    if (!g?.maps?.places) return;
-
-    if (!svcRef.current) {
-      svcRef.current = new g.maps.places.AutocompleteService();
-    }
-    if (!detailsRef.current) {
-      const dummy = document.createElement("div");
-      detailsRef.current = new g.maps.places.PlacesService(dummy);
-    }
-  }, [ready]);
-
-  // Debounced predictions
-  useEffect(() => {
-    if (!ready || !svcRef.current) return;
-
-    if (!q.trim()) {
-      setSuggestions([]);
+    if (!canUsePlaces) return;
+    if (!value || value.trim().length < 3) {
+      setPreds([]);
       return;
     }
+    const svc = new window.google.maps.places.AutocompleteService();
+    svc.getPlacePredictions(
+      { input: value, componentRestrictions: { country: "au" } },
+      (predictions: google.maps.places.AutocompletePrediction[] | null) => {
+        setPreds(predictions ?? []);
+        setOpen(true);
+      }
+    );
+  }, [value, canUsePlaces]);
 
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
-      svcRef.current!.getPlacePredictions(
-        {
-          input: q,
-          componentRestrictions: country ? { country } : undefined,
-          types: ["address"],
-        },
-        (preds: google.maps.places.AutocompletePrediction[] | null) => {
-          setSuggestions(preds ?? []);
-        }
-      );
-    }, 200);
+  // Choose a prediction → resolve details → notify
+  const choosePrediction = (prediction: google.maps.places.AutocompletePrediction) => {
+    if (!canUsePlaces) return;
+    onChange(prediction.description);
+    setOpen(false);
 
-    return () => {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    };
-  }, [q, ready, country]);
-
-  function selectPrediction(p: google.maps.places.AutocompletePrediction) {
-    const g = (window as any).google as typeof google | undefined;
-    if (detailsRef.current && g?.maps?.places) {
-      detailsRef.current.getDetails(
-        { placeId: p.place_id, fields: ["formatted_address"] },
-        (
-          res: google.maps.places.PlaceResult | null,
-          status: google.maps.places.PlacesServiceStatus
-        ) => {
-          if (
-            status === google.maps.places.PlacesServiceStatus.OK &&
-            res?.formatted_address
-          ) {
-            onChange(res.formatted_address);
-            setQ(res.formatted_address);
-          } else {
-            onChange(p.description);
-            setQ(p.description);
+    // Optionally resolve full place details if consumer wants it
+    if (onSelect && prediction.place_id) {
+      const dummy = document.createElement("div");
+      const svc = new window.google.maps.places.PlacesService(dummy);
+      svc.getDetails(
+        { placeId: prediction.place_id, fields: ["formatted_address", "address_components", "geometry", "name", "place_id"] },
+        (res: google.maps.places.PlaceResult | null, status: google.maps.places.PlacesServiceStatus) => {
+          if (status === window.google!.maps.places.PlacesServiceStatus.OK && res) {
+            onSelect(res);
           }
-          setOpen(false);
-          setSuggestions([]);
         }
       );
-    } else {
-      onChange(p.description);
-      setQ(p.description);
-      setOpen(false);
-      setSuggestions([]);
     }
-  }
+  };
+
+  // Close list when clicking outside
+  useEffect(() => {
+    const onDocClick = (evt: MouseEvent) => {
+      if (!inputRef.current) return;
+      if (!evt.target) return;
+      if (!inputRef.current.parentElement?.contains(evt.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, []);
 
   return (
     <div className="relative">
-      {/* Load Google Maps JS (with Places library) once */}
-      <Script
-        src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=places&v=weekly`}
-        strategy="afterInteractive"
-        onLoad={() => setReady(true)}
-      />
       <input
-        className="w-full rounded-xl border p-2"
+        ref={inputRef}
+        className={className ?? "w-full rounded-xl border border-gray-400 p-2"}
         placeholder={placeholder}
-        value={q}
-        onChange={(e) => {
-          setQ(e.target.value);
-          onChange(e.target.value);
-        }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)} // allow click
+        value={value}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
+        onFocus={() => preds.length && setOpen(true)}
       />
-      {open && suggestions.length > 0 && (
-        <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-xl border bg-white shadow">
-          <ul className="max-h-64 overflow-auto">
-            {suggestions.map((p) => (
-              <li key={p.place_id}>
-                <button
-                  type="button"
-                  onClick={() => selectPrediction(p)}
-                  className="block w-full px-3 py-2 text-left hover:bg-gray-50"
-                >
-                  {p.structured_formatting?.main_text}
-                  {p.structured_formatting?.secondary_text && (
-                    <span className="text-gray-500">
-                      {" "}
-                      {p.structured_formatting.secondary_text}
-                    </span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
+      {open && preds.length > 0 && (
+        <ul className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-xl border border-gray-300 bg-white shadow">
+          {preds.map((p) => (
+            <li
+              key={p.place_id}
+              className="cursor-pointer px-3 py-2 hover:bg-gray-50"
+              onClick={() => choosePrediction(p)}
+            >
+              {p.description}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
